@@ -80,7 +80,7 @@ cm.scan_controllers = lambda exclude_paths=frozenset(): [
      "hidraw": ["/dev/hidraw0"]}]
 
 class FakeRemapper:
-    def __init__(self, src_path, target_spec, button_map=None): self.alive = True
+    def __init__(self, src_path, target_spec, button_map=None, invert_y=False): self.alive = True
     def start(self): pass
     def stop(self): self.alive = False
     def join(self, timeout=None): pass

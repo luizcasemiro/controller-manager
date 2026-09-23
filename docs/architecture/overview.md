@@ -172,12 +172,32 @@ entries stuck disabled. Each connected controller becomes a section of radio ite
 selecting one calls back into `ControllerManager.set_mode()` via the cached id lookup.
 Full rationale: [dbusmenu item model](../decisions/tray-menu-model.md).
 
+The tray also hosts the **per-button remapping GUI** entry ("Remap buttons..." per
+controller), which hands off to a separate GTK process. The daemon stays headless; it
+exposes a second D-Bus object (`/ControllerManager`, interface
+`org.ctrlmgr.ControllerManager1`) that the GUI talks to:
+
+- **Discovery / read-back:** `ListControllers`, `GetButtons` (the pad's live `EV_KEY`
+  codes), `GetTargetButtons` (the output identity's codes, for the picker), `GetBindings`.
+- **Editing:** `SetBinding(ident, src, dst)` applies immediately (recomposes the remap and
+  re-asserts the mode under the lock) and persists to the config's `_bindings` key;
+  `ResetBindings(ident)` clears a controller; `BindingsChanged` signals the GUI to
+  re-read.
+- **Capture:** `CaptureStart`/`CaptureCancel` plus the `CaptureResult` signal. Capturing
+  releases that pad's remap grab and pauses re-asserts for it (the monitor skips a pad
+  whose ident is mid-capture), waits for the next physical button-down on the real device,
+  and re-asserts the mode afterward - so the recorded press goes to the pad, not to the
+  virtual device the grab would otherwise forward it through. Composition and semantics:
+  [button binding UI](../decisions/button-binding-ui.md).
+
 ## Lifecycle and persistence
 
 - **Hotplug:** the monitor adds instances for new devices and stops instances for removed
   ones; stopping always restores the hidraw node so a gate never lingers after a
   disconnect.
 - **Persistence:** `set_mode()` writes the chosen mode to `controller-modes.json`, keyed
-  by the device's stable identity (`uniq`, else `phys:...`).
+  by the device's stable identity (`uniq`, else `phys:...`). Per-button bindings
+  (`set_binding()`/`reset_bindings()`) live in the same file under the reserved `_bindings`
+  key, keyed the same way.
 - **Shutdown:** on `SIGTERM`/`SIGINT` the daemon stops every instance, releasing grabs and
   restoring all gated nodes.

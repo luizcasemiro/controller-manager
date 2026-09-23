@@ -28,6 +28,11 @@ This repository is a self-contained tool and a worked example of a Linux input p
 
 - **Per-controller remapping** - each connected controller has its own mode (native or
   remapped), chosen from the tray.
+- **Per-button bindings (Per-Button Remapping GUI)** - a small GTK window can rebuild any
+  button of any controller press-by-press: record a physical button, pick its output
+  (including *program default* to fall back to the mode's own mapping), per controller and
+  independent of its mode. Bindings persist in `~/.config/controller-modes.json` under
+  `_bindings`; see [the GUI decision](docs/decisions/button-binding-ui.md).
 - **Multiple controllers at once** - two identical pads are tracked independently via a
   stable per-device identity, so one can be native while the other is remapped.
 - **Launcher-agnostic** - works at the device layer, so every application sees the result
@@ -130,8 +135,43 @@ controllers keep separate settings:
 }
 ```
 
+A global `invert_y_axes` option (default `false`) mirrors the analog-stick Y axes
+(`ABS_Y`, `ABS_RY`) on the virtual output of every remapped controller, useful when a
+controller reports Y axes upside down. A second global option, `xbox_xy_swap` (default
+`false`), swaps the 0x133/0x134 face-button codes onto the "X-Box 360 pad" identity for
+games that read them that way. Both are read at daemon start; restart the service
+after editing them:
+
+```json
+{
+  "invert_y_axes": true,
+  "xbox_xy_swap": false,
+  "ac:36:1b:70:70:e8": "ps5-xbox"
+}
+```
+
 The file is managed by the daemon; it is normally not edited by hand. A stored mode that
 is no longer offered for a controller family falls back to that family's native default.
+
+Per-button bindings live under the reserved `_bindings` key, keyed by controller identity
+(stable per-device, same as modes). Each value maps a *device* button code (as the pad
+reports it) to the *output* code of the selected identity, so a binding applies whichever
+mode the controller is in:
+
+```json
+{
+  "_bindings": {
+    "ac:36:1b:70:70:e8": {
+      "304": 305,
+      "308": 311
+    }
+  }
+}
+```
+
+A controller with no entry falls back to the mode's own quirk+target mapping; an empty
+per-controller map means bindings are off for that controller. The files are normally
+written through the remapping GUI, never by hand.
 
 ## Supported controllers
 
@@ -152,6 +192,8 @@ pads, over USB and Bluetooth.
   - [Daemon-owned player numbers](docs/decisions/player-leds.md)
   - [dbusmenu item model](docs/decisions/tray-menu-model.md)
   - [Xbox 0x02FD HID-BPF descriptor fixup](docs/decisions/xbox-02fd-hid-bpf.md)
+  - [Per-button remapping GUI & bindings](docs/decisions/button-binding-ui.md)
+  - [SDL gamepad database import](docs/decisions/sdl-gamecontrollerdb.md)
 - [Troubleshooting / known issues](docs/troubleshooting.md)
 - Runbooks:
   - [Installation](runbooks/install.md)

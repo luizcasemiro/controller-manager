@@ -98,6 +98,12 @@ VIRTUAL_PS5 = dict(
 
 VIRTUAL_NAMES = {VIRTUAL_XBOX["name"], VIRTUAL_PS5["name"]}
 
+# Analog-stick Y axes inverted by the invert_y_axes config option (the values
+# are mirrored via the axis' min/max before they reach uinput, so the range is
+# preserved). Only these two change; X axes, triggers and buttons pass through
+# untouched.
+INVERT_Y_AXES = (e.ABS_Y, e.ABS_RY)
+
 # Some controllers expose a non-standard evdev button layout via their kernel
 # driver; a raw passthrough then mismatches what SDL expects for the *target*
 # identity (buttons land wrong / dead). Per source (vendor, product): source
@@ -122,8 +128,12 @@ QUIRK_BUTTON_MAP = {
 # -> BTN_WEST (0x134), while xpad assigns the SAME codes the other way round -
 # X (left) -> BTN_X (== BTN_NORTH) and Y (top) -> BTN_Y (== BTN_WEST).
 # Consumers resolve codes against the advertised identity, so a 1:1
-# passthrough onto an "X-Box 360 pad" swaps X/Y in games. All other codes
-# (A/B, Select/Start/Guide, sticks and triggers via ABS) happen to agree.
+# passthrough onto an "X-Box 360 pad" swaps X/Y in games - in principle. In
+# practice the mapping is ambiguous (some games/index-based mappers read the
+# codes the other way), so the swap is OFF by default (identity-agnostic
+# passthrough, matching what most titles expect) and enabled per the config
+# key "xbox_xy_swap". All other codes (A/B, Select/Start/Guide, sticks and
+# triggers via ABS) happen to agree.
 # Per target name: standard source code -> code expected under that identity.
 TARGET_BUTTON_MAP = {
     VIRTUAL_XBOX["name"]: {
@@ -132,21 +142,106 @@ TARGET_BUTTON_MAP = {
     },
 }
 
-def compose_button_maps(quirk, target):
+def compose_button_maps(quirk, target, user=None):
     """Chain quirk (source code -> standard code) and target (standard code ->
     code under the target identity) into the single dict the Remapper applies
-    per event; None when both are empty."""
-    quirk, target = quirk or {}, target or {}
-    combined = {src: target.get(std, std) for src, std in quirk.items()}
+    per event, then let the per-controller user bindings win outright.
+
+    user holds the buttons the user explicitly rebound, keyed by the PHYSICAL
+    device code (as GetButtons reports) and valued at the OUTPUT identity's
+    codes (as GetTargetButtons reports). A present key completely overrides the
+    quirk+target remap for that physical button; any other code - or a whole
+    empty user map - keeps the plain program remap. None when all layers are
+    empty (plain passthrough)."""
+    quirk, target, user = quirk or {}, target or {}, user or {}
+    combined = {}
+    for src, dst in user.items():
+        combined[src] = dst                 # user bind wins outright
+    for src, std in quirk.items():          # then quirk -> target for the rest
+        combined.setdefault(src, target.get(std, std))
     for std, tgt in target.items():
         combined.setdefault(std, tgt)
     return combined or None
+
+# User-facing names for physical buttons, per controller family. The GUI shows
+# these so a user can bind "Circle" on the PS pad to "B" on the virtual Xbox pad
+# without decoding raw evcodes. A code with no entry falls back to its evdev name.
+PHYS_BTN_LABELS = {
+    "ps5": {
+        e.BTN_SOUTH:  "Cross",
+        e.BTN_EAST:   "Circle",
+        e.BTN_NORTH:  "Triangle",
+        e.BTN_WEST:   "Square",
+        e.BTN_TL:     "L1",
+        e.BTN_TR:     "R1",
+        e.BTN_TL2:    "L2",
+        e.BTN_TR2:    "R2",
+        e.BTN_SELECT: "Share",
+        e.BTN_START:  "Options",
+        e.BTN_MODE:   "PS",
+        e.BTN_THUMBL: "L3",
+        e.BTN_THUMBR: "R3",
+        e.BTN_TOUCH:  "Touchpad",
+        e.KEY_MENU:   "PS",
+    },
+    "xbox": {
+        e.BTN_SOUTH:  "A",
+        e.BTN_EAST:   "B",
+        e.BTN_NORTH:  "X",
+        e.BTN_WEST:   "Y",
+        e.BTN_TL:     "LB",
+        e.BTN_TR:     "RB",
+        e.BTN_TL2:    "LT",
+        e.BTN_TR2:    "RT",
+        e.BTN_SELECT: "View",
+        e.BTN_START:  "Menu",
+        e.BTN_MODE:   "Guide",
+        e.BTN_THUMBL: "L3",
+        e.BTN_THUMBR: "R3",
+    },
+}
+
+# Destination identity of the ps5-xbox remap is the virtual Xbox pad, whose
+# buttons carry xpad's layout - the same codes and names as the xbox column.
+TARGET_BTN_LABELS = {
+    VIRTUAL_XBOX["name"]: PHYS_BTN_LABELS["xbox"],
+}
+
+def action_label(code, family=None, target_name=None):
+    """Readable name of a button code for the binding GUI: the physical pad's
+    family label when given, else the target identity's, else the evdev name."""
+    if family is not None:
+        got = PHYS_BTN_LABELS.get(family, {}).get(code)
+        if got:
+            return got
+    if target_name is not None:
+        got = TARGET_BTN_LABELS.get(target_name, {}).get(code)
+        if got:
+            return got
+    return e.BTN.get(code) or e.KEY.get(code, f"code {code}")
 
 # DBus names
 BUS_NAME  = "org.kde.StatusNotifierItem-ctrlmgr-1"
 ITEM_PATH = "/StatusNotifierItem"
 MENU_PATH = "/MenuBar"
 QUIT_ID   = 9999
+
+# Custom API surface for the binding GUI (a separate GTK process): dedicated
+# well-known bus name, object path and interface are ours.
+CTRLMGR_BUS   = "org.ctrlmgr.ControllerManager1"
+CTRLMGR_PATH  = "/ControllerManager"
+CTRLMGR_IFACE = "org.ctrlmgr.ControllerManager1"
+
+# Path of the GUI helper the tray launches (user-space, installed by install.sh
+# next to the daemon itself). Launching it spawns a NEW process: the daemon is
+# deliberately GUI-free (see docs/architecture/overview.md).
+GUI_SCRIPT = os.path.expanduser("~/.local/bin/controller-gui.py")
+
+# Config key holding per-controller user button bindings, mirroring the "_"-prefixed
+# manager-controlled keys (_players): { <ident>: { src_evcode: dst_evcode } }. Only
+# the buttons a user actually rebound are stored; everything else falls through to
+# the program's quirk+target remap (see compose_button_maps).
+BINDINGS_KEY = "_bindings"
 
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -433,14 +528,42 @@ def scan_controllers(exclude_paths=frozenset()):
 
 # ── Remapper thread ──────────────────────────────────────────────────────────
 
+def capture_button(dev, timeout, cancel=None):
+    """Block until the next EV_KEY down-press (value 1) on `dev` (an evdev
+    InputDevice, or a stand-in exposing .fd/.read), up to `timeout` seconds.
+    Reads in 0.25 s slices so a cancel/timeout is observed promptly. Returns
+    the key code, or 0 on timeout/cancel; key releases are ignored."""
+    if cancel is None:
+        cancel = threading.Event()
+    deadline = time.monotonic() + float(timeout)
+    sel = selectors.DefaultSelector()
+    try:
+        sel.register(dev.fd, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or cancel.is_set():
+                return 0
+            if not sel.select(min(remaining, 0.25)):
+                continue
+            try:
+                events = dev.read()
+            except (BlockingIOError, OSError):
+                continue
+            for ev in events:
+                if ev.type == e.EV_KEY and ev.value == 1:
+                    return ev.code
+    finally:
+        sel.close()
+
 class Remapper(threading.Thread):
     """Grabs a source controller and emits a virtual target device."""
 
-    def __init__(self, src_path, target_spec, button_map=None):
+    def __init__(self, src_path, target_spec, button_map=None, invert_y=False):
         super().__init__(daemon=True)
         self._src_path   = src_path
         self._target     = target_spec
         self._button_map = button_map or {}
+        self._invert_y   = invert_y
         self._stop_event = threading.Event()
         self._ui         = None
         self._virtual_path = None
@@ -486,6 +609,10 @@ class Remapper(threading.Thread):
                 caps[e.EV_KEY] = list(dict.fromkeys(
                     self._button_map.get(c, c) for c in caps[e.EV_KEY]))
 
+            # Source absinfo per axis, for range-preserving value mirroring.
+            abs_info = {code: info for code, info in
+                        caps.get(e.EV_ABS, [])}
+
             try:
                 ui = UInput(events=caps, **self._target)
             except Exception as ex:
@@ -493,7 +620,19 @@ class Remapper(threading.Thread):
                 return
 
             self._ui           = ui
-            self._virtual_path = ui.device.path
+            # The uinput node's /sys entry can lag (or be hidden by a container
+            # /sys, where the /dev node still works). Poll briefly, then proceed
+            # with None rather than crash the whole remap loop.
+            self._virtual_path = None
+            for _ in range(10):
+                try:
+                    if ui.device is not None:
+                        self._virtual_path = ui.device.path
+                except Exception:
+                    pass
+                if self._virtual_path:
+                    break
+                time.sleep(0.1)
 
             try:
                 src.grab()
@@ -518,7 +657,15 @@ class Remapper(threading.Thread):
                                 code = event.code
                                 if event.type == e.EV_KEY and self._button_map:
                                     code = self._button_map.get(code, code)
-                                ui.write(event.type, code, event.value)
+                                value = event.value
+                                if (event.type == e.EV_ABS and self._invert_y
+                                        and code in INVERT_Y_AXES):
+                                    info = abs_info.get(code)
+                                    if info is not None:
+                                        # Mirror within the axis range so
+                                        # min/max are preserved.
+                                        value = info.min + info.max - value
+                                ui.write(event.type, code, value)
                                 ui.syn()
             except OSError:
                 pass
@@ -545,13 +692,19 @@ class Remapper(threading.Thread):
 
 class ControllerInstance:
     def __init__(self, path, name, vendor, product, family, mode, uniq, phys,
-                 hidraw):
+                 hidraw, invert_y=False, xy_swap=False, bindings=None):
         self.path    = path
         self.name    = name
         self.vendor  = vendor
         self.product = product
         self.family  = family
         self.mode    = mode
+        self.invert_y = invert_y  # mirror ABS_Y/ABS_RY on the virtual output
+        # Opt-in 0x133<->0x134 swap onto the Xbox identity ("xbox_xy_swap").
+        self.xy_swap = xy_swap
+        # Per-controller user button remap { src ecode: dst ecode }; keys the
+        # user explicitly rebound only. Empty means "program remap as-is".
+        self.bindings = dict(bindings or {})
         self.uniq    = uniq       # stable per-device id (BT MAC / serial)
         self.phys    = phys       # physical attachment (USB port / BT adapter)
         # Stable key across reconnects: a reconnect changes the evdev path but
@@ -765,8 +918,9 @@ class ControllerInstance:
         if target and self.path:
             bmap = compose_button_maps(
                 QUIRK_BUTTON_MAP.get((self.vendor, self.product)),
-                TARGET_BUTTON_MAP.get(target["name"]))
-            r = Remapper(self.path, target, bmap)
+                TARGET_BUTTON_MAP.get(target["name"]) if self.xy_swap else None,
+                self.bindings)
+            r = Remapper(self.path, target, bmap, invert_y=self.invert_y)
             r.start()
             self._remap = r
 
@@ -870,11 +1024,21 @@ class ControllerManager:
         self._lock       = threading.Lock()
         self._instances  = {}      # ident -> ControllerInstance
         self._config     = load_config()
+        self._invert_y   = bool(self._config.get("invert_y_axes", False))
+        self._xy_swap   = bool(self._config.get("xbox_xy_swap", False))
         self._on_change  = on_change_cb   # called (from thread) when list changes
         self._monitor_th = threading.Thread(target=self._monitor, daemon=True)
         # Monotonic deadline at which a standing numbering gap is compacted, or
         # None when the numbers are contiguous. Armed/cleared each _poll pass.
         self._compact_due = None
+        # Button-capture state (binding GUI): ident currently being captured, or
+        # None. One capture at a time; the _poll reconcile must not re-grab a pad
+        # mid-capture (it would eat the user's press).
+        self._capturing_ident = None
+        self._capture_worker  = None
+        self._on_capture      = None   # callback(ident, code) called on completion
+        self._capture_cancel  = threading.Event()
+        self._gui_proc        = None   # running binding-GUI subprocess (if any)
 
     def start(self):
         # Populate instances synchronously so the first menu we publish already
@@ -939,9 +1103,12 @@ class ControllerManager:
                     #    grab without the pad ever appearing absent (the thread
                     #    is dead but the mode still wants a remap).
                     # Both: re-assert the whole mode - restart the remapper,
-                    # re-gate the hidraw node, repaint the lightbar.
-                    inst.rebind(d["path"], d["name"], d["hidraw"])
-                    churned = True
+                    # re-gate the hidraw node, repaint the lightbar. Skipped while
+                    # the binding GUI is capturing this pad: a re-grab would eat
+                    # the press the user is about to record.
+                    if ident != self._capturing_ident:
+                        inst.rebind(d["path"], d["name"], d["hidraw"])
+                        churned = True
             # Add genuinely new controllers.
             for ident, d in found.items():
                 if ident in self._instances:
@@ -955,7 +1122,10 @@ class ControllerManager:
                     mode = default
                 inst = ControllerInstance(
                     d["path"], d["name"], d["vendor"], d["product"],
-                    d["family"], mode, d["uniq"], d["phys"], d["hidraw"])
+                    d["family"], mode, d["uniq"], d["phys"], d["hidraw"],
+                    invert_y=self._invert_y,
+                    xy_swap=self._xy_swap,
+                    bindings=self._config.get(BINDINGS_KEY, {}).get(ident))
                 # Overall connection order: a pad keeps the number it was
                 # FIRST adopted under ("_players" in the config, keyed like
                 # the modes by stable ident) - daemon restarts re-adopt in
@@ -1098,6 +1268,164 @@ class ControllerManager:
             for inst in self._instances.values():
                 inst.stop()
 
+    # ── button bindings (per-controller user remap) ───────────────────────────
+
+    @staticmethod
+    def _norm_bindings(entry):
+        """JSON round-trips object keys as strings, but evdev codes are ints.
+        Normalise a configured {src: dst} map (or None) to {int src: int dst}."""
+        out = {}
+        for k, v in (entry or {}).items():
+            try:
+                out[int(k)] = int(v)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def get_bindings(self, ident):
+        """The controller's configured {src ec: dst ec} map (int keys)."""
+        with self._lock:
+            return self._norm_bindings(
+                self._config.get(BINDINGS_KEY, {}).get(ident))
+
+    def get_buttons(self, ident):
+        """(code, user-facing label) for every button the controller exposes,
+        for the binding GUI's source list."""
+        with self._lock:
+            inst = self._instances.get(ident)
+            if not inst or not inst.path:
+                return []
+        try:
+            dev = evdev.InputDevice(inst.path)
+        except Exception:
+            return []
+        try:
+            keys = dev.capabilities().get(e.EV_KEY, [])
+        finally:
+            dev.close()
+        codes = sorted({c for c in keys if isinstance(c, int)})
+        return [(c, action_label(c, family=inst.family)) for c in codes]
+
+    def set_binding(self, ident, src, dst):
+        """Map button `src` on this controller to button `dst`; dst < 0 removes
+        the mapping, falling back to the program's quirk+target remap."""
+        with self._lock:
+            inst = self._instances.get(ident)
+            if not inst:
+                return False
+            src, dst = int(src), int(dst)
+            per = self._config.setdefault(BINDINGS_KEY, {})
+            entry = per.setdefault(ident, {})
+            key = str(src)
+            if dst < 0:
+                entry.pop(key, None)
+                if not entry:
+                    per.pop(ident, None)
+                    if not per:
+                        self._config.pop(BINDINGS_KEY, None)
+            else:
+                entry[key] = dst
+            inst.bindings = self._norm_bindings(per.get(ident))
+            inst.apply_mode()
+        save_config(self._config)
+        GLib.idle_add(self._on_change)
+        return True
+
+    def reset_bindings(self, ident):
+        """Remove every user binding on this controller (program remap only)."""
+        with self._lock:
+            inst = self._instances.get(ident)
+            if not inst:
+                return False
+            per = self._config.get(BINDINGS_KEY, {})
+            per.pop(ident, None)
+            if not per:
+                self._config.pop(BINDINGS_KEY, None)
+            inst.bindings = {}
+            inst.apply_mode()
+        save_config(self._config)
+        GLib.idle_add(self._on_change)
+        return True
+
+    def open_gui(self, ident=None):
+        """Launch the binding GUI as a SEPARATE process - the daemon never links
+        a GUI toolkit (docs/architecture/overview.md). A GUI already running is
+        reused, never respawned; the optional ident pre-selects a controller."""
+        if not os.path.exists(GUI_SCRIPT):
+            return
+        if self._gui_proc is not None and self._gui_proc.poll() is None:
+            return
+        cmd = [sys.executable, GUI_SCRIPT]
+        if ident:
+            cmd.append(str(ident))
+        self._gui_proc = subprocess.Popen(cmd)
+
+    # ── button capture (binding GUI records a physical press) ─────────────────
+
+    def start_capture(self, ident, timeout, on_result):
+        """Begin recording one physical button press on `ident`. The remapper's
+        grab is briefly released (gate state kept, so the pad stays hidden in a
+        remap mode), the next EV_KEY down-press - or the timeout - is captured,
+        the remap is re-asserted, then on_result(ident, code) fires (code 0 on
+        timeout/cancel). One capture at a time; False when busy or unknown."""
+        with self._lock:
+            if self._capturing_ident is not None:
+                return False
+            inst = self._instances.get(ident)
+            if not inst or not inst.path:
+                return False
+            self._capturing_ident = ident
+            self._capture_cancel = threading.Event()
+            self._on_capture = on_result
+        threading.Thread(
+            target=self._capture_run, args=(ident, float(timeout)),
+            daemon=True).start()
+        return True
+
+    def cancel_capture(self, ident):
+        with self._lock:
+            if self._capturing_ident != ident:
+                return False
+            self._capture_cancel.set()
+        return True
+
+    def _capture_run(self, ident, timeout):
+        dev = None
+        code = 0
+        try:
+            inst = next((i for i in self.get_instances() if i.ident == ident), None)
+            if inst is not None and inst._remap is not None:
+                old = inst._remap
+                old.stop()
+                old.join(timeout=1.0)   # wait for the ungrab before opening
+                inst._remap = None
+            if inst is not None and inst.path:
+                try:
+                    dev = evdev.InputDevice(inst.path)
+                    code = capture_button(dev, timeout, self._capture_cancel)
+                except Exception as ex:
+                    print(f"capture: {ident}: {ex}", file=sys.stderr)
+        except Exception as ex:
+            print(f"capture: {ident}: {ex}", file=sys.stderr)
+        finally:
+            if dev is not None:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
+            inst = next((i for i in self.get_instances() if i.ident == ident), None)
+            if inst is not None:
+                try:
+                    inst.apply_mode()   # re-grab, re-gate (no-op), repaint
+                except Exception as ex:
+                    print(f"capture: re-assert failed for {ident}: {ex}",
+                          file=sys.stderr)
+            with self._lock:
+                self._capturing_ident = None
+            cb, self._on_capture = self._on_capture, None
+            if cb is not None:
+                GLib.idle_add(cb, ident, code)
+
 
 # ── dbusmenu ────────────────────────────────────────────────────────────────
 
@@ -1174,6 +1502,12 @@ class DbusmenuServer(dbus.service.Object):
                     for mode in modes:
                         sem.append(("radio", inst.ident, mode,
                                     MODE_LABELS[mode], inst.mode == mode))
+                if inst is not instances[-1]:
+                    sem.append(("sep",))
+                # Per-controller entry into the binding GUI (separate process);
+                # the ident is carried so the GUI pre-selects this pad.
+                sem.append(("action", ("remap", inst.ident),
+                            "Remap buttons..."))
                 if inst is not instances[-1]:
                     sem.append(("sep",))
         # Offer a manual compaction only while a gap actually exists - with a
@@ -1335,8 +1669,11 @@ class DbusmenuServer(dbus.service.Object):
             ctrl_ident, mode = hit
             self._mgr.set_mode(ctrl_ident, mode)
             return
-        if self._actions.get(int(id_)) == "renumber":
+        action = self._actions.get(int(id_))
+        if action == "renumber":
             self._mgr.renumber()
+        elif isinstance(action, tuple) and action[0] == "remap":
+            self._mgr.open_gui(action[1])
 
     @dbus.service.method("com.canonical.dbusmenu",
                          in_signature="a(isvu)", out_signature="ai")
@@ -1377,6 +1714,87 @@ class DbusmenuServer(dbus.service.Object):
 
     @dbus.service.signal("com.canonical.dbusmenu", signature="iu")
     def ItemActivationRequested(self, id_, timestamp): pass
+
+
+# ── Controller binding API (separate GTK GUI) ─────────────────────────────────
+
+class CtlrMgrServer(dbus.service.Object):
+    """D-Bus surface for the binding GUI (controller-gui.py, a separate GTK
+    process - the daemon itself links no toolkit). Runs on the daemon's own
+    main loop; captures happen on a worker thread and their result arrives as
+    a signal, since the GUI must never be blocked behind a press wait."""
+
+    def __init__(self, bus, manager):
+        self._bus_name = dbus.service.BusName(CTRLMGR_BUS, bus)
+        dbus.service.Object.__init__(self, self._bus_name, CTRLMGR_PATH)
+        self._mgr = manager
+
+    @dbus.service.method(CTRLMGR_IFACE, out_signature="a(ssss)")
+    def ListControllers(self):
+        return dbus.Array(
+            [dbus.Struct((inst.ident, inst.name, inst.family, inst.mode),
+                         signature="(ssss)")
+             for inst in self._mgr.get_instances()],
+            signature="(ssss)")
+
+    @dbus.service.method(CTRLMGR_IFACE, in_signature="s", out_signature="a(is)")
+    def GetButtons(self, ident):
+        return dbus.Array(
+            [dbus.Struct((code, label), signature="(is)")
+             for code, label in self._mgr.get_buttons(str(ident))],
+            signature="(is)")
+
+    @dbus.service.method(CTRLMGR_IFACE, out_signature="a(is)")
+    def GetTargetButtons(self):
+        labels = TARGET_BTN_LABELS[VIRTUAL_XBOX["name"]]
+        return dbus.Array(
+            [dbus.Struct((code, label), signature="(is)")
+             for code, label in sorted(labels.items())],
+            signature="(is)")
+
+    @dbus.service.method(CTRLMGR_IFACE, in_signature="s", out_signature="a{ii}")
+    def GetBindings(self, ident):
+        bindings = self._mgr.get_bindings(str(ident))
+        return dbus.Dictionary(
+            {dbus.Int32(k): dbus.Int32(v) for k, v in bindings.items()},
+            signature="ii")
+
+    @dbus.service.method(CTRLMGR_IFACE, in_signature="sii", out_signature="b")
+    def SetBinding(self, ident, src, dst):
+        ok = self._mgr.set_binding(str(ident), int(src), int(dst))
+        if ok:
+            self.BindingsChanged(str(ident))
+        return bool(ok)
+
+    @dbus.service.method(CTRLMGR_IFACE, in_signature="s", out_signature="b")
+    def ResetBindings(self, ident):
+        ok = self._mgr.reset_bindings(str(ident))
+        if ok:
+            self.BindingsChanged(str(ident))
+        return bool(ok)
+
+    @dbus.service.method(CTRLMGR_IFACE, in_signature="sd", out_signature="b")
+    def CaptureStart(self, ident, timeout):
+        return bool(
+            self._mgr.start_capture(str(ident), float(timeout),
+                                    self._capture_done))
+
+    @dbus.service.method(CTRLMGR_IFACE, in_signature="s", out_signature="b")
+    def CaptureCancel(self, ident):
+        return bool(self._mgr.cancel_capture(str(ident)))
+
+    @dbus.service.signal(CTRLMGR_IFACE, signature="si")
+    def CaptureResult(self, ident, code):
+        pass
+
+    @dbus.service.signal(CTRLMGR_IFACE, signature="s")
+    def BindingsChanged(self, ident):
+        pass
+
+    def _capture_done(self, ident, code):
+        # Runs on the main loop (scheduled via GLib.idle_add by the capture
+        # worker), so emitting the dbus signal from here is safe.
+        self.CaptureResult(ident, int(code))
 
 
 # ── StatusNotifierItem (tray) ────────────────────────────────────────────────
@@ -1484,6 +1902,9 @@ def main():
     menu = DbusmenuServer(bus, MENU_PATH, mgr, _shutdown_and_quit)
     tray = TrayIcon(bus, mgr, menu)
     tray_ref[0] = tray
+    # Binding-gui API (separate process); shares the daemon's bus and well-known
+    # name, so the GUI resolves everything from BUS_NAME alone.
+    ctlr = CtlrMgrServer(bus, mgr)
 
     watcher_name = "org.kde.StatusNotifierWatcher"
 

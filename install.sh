@@ -6,8 +6,9 @@
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
-echo "==> User-space (controller-manager + service)"
+echo "==> User-space (controller-manager + binding GUI + service)"
 install -D -m 0755 controller-manager.py       "$HOME/.local/bin/controller-manager.py"
+install -D -m 0755 controller-gui.py           "$HOME/.local/bin/controller-gui.py"
 install -D -m 0644 controller-manager.service  "$HOME/.config/systemd/user/controller-manager.service"
 
 echo "==> Root-space (hidraw gate + led helper + udev rule + sudoers) - sudo required"

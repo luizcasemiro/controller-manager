@@ -62,7 +62,7 @@ cm.scan_controllers = lambda exclude_paths=frozenset(): [
 
 class FakeRemapper:
     """No uinput/evdev in the test; apply_mode only needs the lifecycle."""
-    def __init__(self, src_path, target_spec, button_map=None):
+    def __init__(self, src_path, target_spec, button_map=None, invert_y=False):
         self.alive = True
     def start(self): pass
     def stop(self): self.alive = False
