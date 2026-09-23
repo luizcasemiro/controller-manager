@@ -123,44 +123,22 @@ QUIRK_BUTTON_MAP = {
     },
 }
 
-# The 0x133/0x134 codes are positionally inverted between driver families:
-# hid-playstation emits Triangle (top) -> BTN_NORTH (0x133) and Square (left)
-# -> BTN_WEST (0x134), while xpad assigns the SAME codes the other way round -
-# X (left) -> BTN_X (== BTN_NORTH) and Y (top) -> BTN_Y (== BTN_WEST).
-# Consumers resolve codes against the advertised identity, so a 1:1
-# passthrough onto an "X-Box 360 pad" swaps X/Y in games - in principle. In
-# practice the mapping is ambiguous (some games/index-based mappers read the
-# codes the other way), so the swap is OFF by default (identity-agnostic
-# passthrough, matching what most titles expect) and enabled per the config
-# key "xbox_xy_swap". All other codes (A/B, Select/Start/Guide, sticks and
-# triggers via ABS) happen to agree.
-# Per target name: standard source code -> code expected under that identity.
-TARGET_BUTTON_MAP = {
-    VIRTUAL_XBOX["name"]: {
-        e.BTN_NORTH: e.BTN_WEST,   # Triangle -> 0x134, read as Y (top)
-        e.BTN_WEST:  e.BTN_NORTH,  # Square   -> 0x133, read as X (left)
-    },
-}
-
-def compose_button_maps(quirk, target, user=None):
-    """Chain quirk (source code -> standard code) and target (standard code ->
-    code under the target identity) into the single dict the Remapper applies
-    per event, then let the per-controller user bindings win outright.
+def compose_button_maps(quirk, user=None):
+    """Combine the driver quirk map and the per-controller user bindings into
+    the single dict the Remapper applies per event.
 
     user holds the buttons the user explicitly rebound, keyed by the PHYSICAL
     device code (as GetButtons reports) and valued at the OUTPUT identity's
     codes (as GetTargetButtons reports). A present key completely overrides the
-    quirk+target remap for that physical button; any other code - or a whole
-    empty user map - keeps the plain program remap. None when all layers are
+    quirk remap for that physical button; any other code - or a whole empty
+    user map - keeps the plain program mapping. None when both layers are
     empty (plain passthrough)."""
-    quirk, target, user = quirk or {}, target or {}, user or {}
+    quirk, user = quirk or {}, user or {}
     combined = {}
     for src, dst in user.items():
         combined[src] = dst                 # user bind wins outright
-    for src, std in quirk.items():          # then quirk -> target for the rest
-        combined.setdefault(src, target.get(std, std))
-    for std, tgt in target.items():
-        combined.setdefault(std, tgt)
+    for src, std in quirk.items():          # quirk fills the rest
+        combined.setdefault(src, std)
     return combined or None
 
 # User-facing names for physical buttons, per controller family. The GUI shows
@@ -240,7 +218,7 @@ GUI_SCRIPT = os.path.expanduser("~/.local/bin/controller-gui.py")
 # Config key holding per-controller user button bindings, mirroring the "_"-prefixed
 # manager-controlled keys (_players): { <ident>: { src_evcode: dst_evcode } }. Only
 # the buttons a user actually rebound are stored; everything else falls through to
-# the program's quirk+target remap (see compose_button_maps).
+# the program's quirk remap (see compose_button_maps).
 BINDINGS_KEY = "_bindings"
 
 
@@ -692,7 +670,7 @@ class Remapper(threading.Thread):
 
 class ControllerInstance:
     def __init__(self, path, name, vendor, product, family, mode, uniq, phys,
-                 hidraw, invert_y=False, xy_swap=False, bindings=None):
+                 hidraw, invert_y=False, bindings=None):
         self.path    = path
         self.name    = name
         self.vendor  = vendor
@@ -700,8 +678,6 @@ class ControllerInstance:
         self.family  = family
         self.mode    = mode
         self.invert_y = invert_y  # mirror ABS_Y/ABS_RY on the virtual output
-        # Opt-in 0x133<->0x134 swap onto the Xbox identity ("xbox_xy_swap").
-        self.xy_swap = xy_swap
         # Per-controller user button remap { src ecode: dst ecode }; keys the
         # user explicitly rebound only. Empty means "program remap as-is".
         self.bindings = dict(bindings or {})
@@ -918,7 +894,6 @@ class ControllerInstance:
         if target and self.path:
             bmap = compose_button_maps(
                 QUIRK_BUTTON_MAP.get((self.vendor, self.product)),
-                TARGET_BUTTON_MAP.get(target["name"]) if self.xy_swap else None,
                 self.bindings)
             r = Remapper(self.path, target, bmap, invert_y=self.invert_y)
             r.start()
@@ -1025,7 +1000,6 @@ class ControllerManager:
         self._instances  = {}      # ident -> ControllerInstance
         self._config     = load_config()
         self._invert_y   = bool(self._config.get("invert_y_axes", False))
-        self._xy_swap   = bool(self._config.get("xbox_xy_swap", False))
         self._on_change  = on_change_cb   # called (from thread) when list changes
         self._monitor_th = threading.Thread(target=self._monitor, daemon=True)
         # Monotonic deadline at which a standing numbering gap is compacted, or
@@ -1124,7 +1098,6 @@ class ControllerManager:
                     d["path"], d["name"], d["vendor"], d["product"],
                     d["family"], mode, d["uniq"], d["phys"], d["hidraw"],
                     invert_y=self._invert_y,
-                    xy_swap=self._xy_swap,
                     bindings=self._config.get(BINDINGS_KEY, {}).get(ident))
                 # Overall connection order: a pad keeps the number it was
                 # FIRST adopted under ("_players" in the config, keyed like
@@ -1308,7 +1281,7 @@ class ControllerManager:
 
     def set_binding(self, ident, src, dst):
         """Map button `src` on this controller to button `dst`; dst < 0 removes
-        the mapping, falling back to the program's quirk+target remap."""
+        the mapping, falling back to the program's quirk remap."""
         with self._lock:
             inst = self._instances.get(ident)
             if not inst:

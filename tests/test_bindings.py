@@ -36,33 +36,32 @@ def check(cond, msg):
 
 from evdev import ecodes as e
 
-# ── composition: quirk -> target, user wins ──────────────────────────────────
+# ── composition: quirk, user wins ────────────────────────────────────────────
 print("Scenario A: compose_button_maps with a per-controller user layer")
 
 quirk_simple = {e.BTN_SOUTH: e.BTN_NORTH}          # physical src -> standard
-target_swap = {e.BTN_NORTH: e.BTN_WEST, e.BTN_WEST: e.BTN_NORTH}
 
-# Baseline: no user map == the old quirk+target behaviour.
-m = cm.compose_button_maps(quirk_simple, target_swap, None)
-check(m[e.BTN_SOUTH] == e.BTN_WEST,
-      "no user map keeps quirk->target (BTN_SOUTH lands on BTN_WEST)")
-check(m[e.BTN_NORTH] == e.BTN_WEST and m[e.BTN_WEST] == e.BTN_NORTH,
-      "target positional swap (0x133<->0x134) still applied")
+# Baseline: no user map == the plain quirk mapping.
+m = cm.compose_button_maps(quirk_simple, None)
+check(m[e.BTN_SOUTH] == e.BTN_NORTH,
+      "no user map keeps the quirk mapping (BTN_SOUTH lands on BTN_NORTH)")
+check(e.BTN_NORTH not in m,
+      "codes outside the mappings pass through unchanged")
 
 # A user bind overrides only its own physical button.
-m2 = cm.compose_button_maps(quirk_simple, target_swap,
+m2 = cm.compose_button_maps(quirk_simple,
                             {e.BTN_SOUTH: e.BTN_TL})
-check(m2[e.BTN_SOUTH] == e.BTN_TL and m2[e.BTN_NORTH] == m[e.BTN_NORTH],
+check(m2[e.BTN_SOUTH] == e.BTN_TL and e.BTN_NORTH not in m2,
       "user bind wins on its own code; neighbours keep the program map")
 
 # User values are output-identity codes, sent verbatim (already resolved).
-m3 = cm.compose_button_maps(None, target_swap, {e.BTN_SOUTH: e.BTN_WEST})
+m3 = cm.compose_button_maps(None, {e.BTN_SOUTH: e.BTN_WEST})
 check(m3[e.BTN_SOUTH] == e.BTN_WEST,
       "user value is emitted at the target identity as-is")
 
 # Empty everywhere -> None (remapper then does plain passthrough).
-check(cm.compose_button_maps(None, None, None) is None
-      and cm.compose_button_maps({}, {}, {}) is None,
+check(cm.compose_button_maps(None, None) is None
+      and cm.compose_button_maps({}, {}) is None,
       "all layers empty -> None (no remap at all)")
 
 # ── config key shape round-trips through JSON ────────────────────────────────

@@ -22,7 +22,7 @@ pressing the button to record (press-to-record).
   identity. It therefore composes with whichever mode the controller is in, and
   `_bindings` does not need a mode column of its own.
 - **Empty means off.** A controller with no bindings entry uses the mode's plain
-  quirk+target remap; an empty entry means the program mapping is disabled for that pad.
+  quirk remap; an empty entry means the program mapping is disabled for that pad.
 - **Launched from the tray** item ("Remap buttons..." per controller); the daemon keeps a
   single GUI subprocess per session and refuses to start a second one. The daemon never
   blocks on the GUI: it only spawns the process and answers its D-Bus calls.
@@ -38,10 +38,9 @@ pressing the button to record (press-to-record).
 
 ### The user layer must win outright
 
-Composition is `user -> quirk+target`: an explicit user binding on a device code
+Composition is `user -> quirk`: an explicit user binding on a device code
 completely overrides the program remap for that code; every other button keeps the
-program's mapping (including the positional `0x133`<->`0x134` swap, which remains unless
-the user explicitly rebinds either). Bindings are deliberately *not* positional: they
+program's mapping. Bindings are deliberately *not* positional: they
 follow the device code, so they survive mode switches and identity changes.
 
 ### The value "may be anything", the label "may fall back"

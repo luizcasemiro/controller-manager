@@ -40,7 +40,7 @@ def check(cond, msg):
 # Lightweight stand-in for ControllerInstance (same shape as test_reconcile.py).
 class FakeInst:
     def __init__(self, path, name, vendor, product, family, mode, uniq, phys,
-                 hidraw, invert_y=False, xy_swap=False, bindings=None):
+                 hidraw, invert_y=False, bindings=None):
         self.path = path; self.name = name; self.vendor = vendor
         self.product = product; self.family = family; self.mode = mode
         self.invert_y = invert_y; self.bindings = dict(bindings or {})

@@ -137,15 +137,12 @@ controllers keep separate settings:
 
 A global `invert_y_axes` option (default `false`) mirrors the analog-stick Y axes
 (`ABS_Y`, `ABS_RY`) on the virtual output of every remapped controller, useful when a
-controller reports Y axes upside down. A second global option, `xbox_xy_swap` (default
-`false`), swaps the 0x133/0x134 face-button codes onto the "X-Box 360 pad" identity for
-games that read them that way. Both are read at daemon start; restart the service
-after editing them:
+controller reports Y axes upside down. It is read at daemon start; restart the service
+after editing it:
 
 ```json
 {
   "invert_y_axes": true,
-  "xbox_xy_swap": false,
   "ac:36:1b:70:70:e8": "ps5-xbox"
 }
 ```
@@ -169,7 +166,7 @@ mode the controller is in:
 }
 ```
 
-A controller with no entry falls back to the mode's own quirk+target mapping; an empty
+A controller with no entry falls back to the mode's own quirk mapping; an empty
 per-controller map means bindings are off for that controller. The files are normally
 written through the remapping GUI, never by hand.
 

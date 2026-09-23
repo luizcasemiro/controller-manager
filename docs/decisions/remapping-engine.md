@@ -41,19 +41,22 @@ buttons in the wrong place. The remapper holds a per-source quirk table and adve
 translated (standard) codes on the virtual device, then translates each event as it is
 forwarded.
 
-### Codes are also translated per *target* identity
+### Target-identity translation was tried and removed
 
-Even a fully standard source cannot always be passed through 1:1, because the kernel
-aliases positional and lettered button constants (`BTN_X == BTN_NORTH == 0x133`,
-`BTN_Y == BTN_WEST == 0x134`) and driver families assign them inverted: `hid-playstation`
-emits Triangle (top) as `0x133` and Square (left) as `0x134`, while `xpad` emits X (left)
-as `0x133` and Y (top) as `0x134`. Consumers (SDL, Steam) resolve codes against the
-device's *advertised* identity - so a DualSense passed through onto an "X-Box 360 pad"
-had X and Y swapped in games (field-observed in Dave the Diver; every other code happens
-to agree between the two drivers). A second, per-target table therefore swaps
-`0x133 <-> 0x134` when the target is the virtual Xbox pad; it is composed with the
-per-source quirk table (quirk first: source -> standard, then target: standard -> target).
-A future `xbox-ps5` mode would need the inverse entry for the virtual DualSense target.
+The kernel aliases positional and lettered button constants (`BTN_X == BTN_NORTH ==
+0x133`, `BTN_Y == BTN_WEST == 0x134`) and driver families assign them inverted:
+`hid-playstation` emits Triangle (top) as `0x133` and Square (left) as `0x134`, while
+`xpad` emits X (left) as `0x133` and Y (top) as `0x134`. A first engine version therefore
+carried a per-target table swapping `0x133 <-> 0x134` when the virtual device was an
+"X-Box 360 pad" (quirk first: source -> standard, then target: standard -> target).
+
+Field use showed the swap was counterproductive: whether it is needed depends on how the
+consuming app resolves codes, and the apps actually used read the codes natively
+(index/canonical order), so the swap inverted their X/Triangle and Y/Square. The target
+layer was removed; the remapper now applies only the per-source quirk table and the
+per-controller user bindings, and face buttons pass through identity-agnostically. A
+per-controller user binding remains the tool for any title that needs a different
+arrangement.
 
 ### The event loop must be interruptible while idle
 

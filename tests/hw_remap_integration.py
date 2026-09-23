@@ -100,8 +100,7 @@ if src_path is None:
     sys.exit(1)
 
 BIND = {e.BTN_SOUTH: e.BTN_TR}                      # user: Cross -> RB
-MAP = cm.compose_button_maps(
-    None, cm.TARGET_BUTTON_MAP[cm.VIRTUAL_XBOX["name"]], BIND)
+MAP = cm.compose_button_maps(None, BIND)
 
 def run_case(name, button_map, invert_y):
     rr = cm.Remapper(src_path, cm.VIRTUAL_XBOX, button_map, invert_y=invert_y)
@@ -153,8 +152,8 @@ try:
         read_dev(out)
 
         src.write(e.EV_KEY, e.BTN_NORTH, 1); src.syn()
-        check(read_dev(out)[:1] == [(e.EV_KEY, e.BTN_WEST, 1)],
-              "target 0x133<->0x134 swap still applied for unbound buttons")
+        check(read_dev(out)[:1] == [(e.EV_KEY, e.BTN_NORTH, 1)],
+              "unbound codes pass through unchanged (no swap layer)")
         src.write(e.EV_KEY, e.BTN_NORTH, 0); src.syn()
         read_dev(out)
 
