@@ -6,20 +6,28 @@ A standalone GTK3 app that talks to the controller-manager daemon over D-Bus
 (interface CTRLMGR_IFACE on BUS_NAME/CTRLMGR_PATH). It is deliberately a
 separate process: the daemon never links a GUI toolkit (see
 docs/architecture/overview.md). Each connected controller has its own bind set;
-a button with no bind falls through to the program's quirk+target remap.
+a button with no bind falls through to the program's quirk remap.
 
 To record a binding the physical button is pressed on the pad: the daemon
 briefly releases its grab, captures the next button press, re-asserts the
 remap, and reports the code back as a D-Bus signal.
 """
 
-import os, sys
+import os, subprocess, sys
 
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 import dbus, dbus.service, dbus.mainloop.glib
+
+# Same config path the daemon uses; kept here so the GUI can point the user at
+# it without reimplementing the daemon's path resolution.
+CONFIG_FILE = os.path.expanduser("~/.config/controller-modes.json")
+
+# User systemd unit the daemon runs under, restarted through the "Restart
+# service" button ("systemctl --user", no root needed for a user unit).
+SERVICE_NAME = "controller-manager.service"
 
 # Well-known identity the daemon's binding controller owns; object path and
 # interface are constant across the two processes, so the GUI needs no config
@@ -70,7 +78,7 @@ class BindingGui:
 
     def _build(self):
         win = Gtk.Window(title="Controller bindings")
-        win.set_default_size(560, 460)
+        win.set_default_size(920, 480)
         self._window = win
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -111,11 +119,17 @@ class BindingGui:
         self._bind_btn.connect("clicked", self._on_remap_clicked)
         reset = Gtk.Button(label="Reset this controller's binds")
         reset.connect("clicked", self._on_reset_clicked)
+        config = Gtk.Button(label="Config folder...")
+        config.connect("clicked", self._on_open_config_clicked)
+        restart = Gtk.Button(label="Restart service")
+        restart.connect("clicked", self._on_restart_clicked)
         close = Gtk.Button(label="Close")
         close.connect("clicked", Gtk.main_quit)
         actions.pack_start(self._bind_btn, False, False, 0)
         actions.pack_start(reset, False, False, 0)
+        actions.pack_start(config, False, False, 0)
         actions.pack_end(close, False, False, 0)
+        actions.pack_end(restart, False, False, 0)
         vbox.pack_start(actions, False, False, 0)
 
     def _status_set(self, text):
@@ -231,6 +245,37 @@ class BindingGui:
                 return
             self._refresh_rows(ident)
             self._status_set("bindings reset to the program default")
+
+    def _on_open_config_clicked(self, *_):
+        folder = os.path.dirname(CONFIG_FILE)
+        try:
+            subprocess.Popen(["xdg-open", folder])
+        except Exception as ex:
+            self._status_set(f"cannot open config folder: {ex}")
+
+    def _on_restart_clicked(self, *_):
+        dialog = Gtk.MessageDialog(
+            transient_for=self._window, modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=f"Restart the {SERVICE_NAME} service?")
+        dialog.format_secondary_text(
+            "Controllers will reconnect and keep their modes and bindings.")
+        resp = dialog.run()
+        dialog.destroy()
+        if resp != Gtk.ResponseType.YES:
+            return
+        try:
+            ret = subprocess.call(
+                ["systemctl", "--user", "restart", SERVICE_NAME])
+        except Exception as ex:
+            self._status_set(f"cannot restart service: {ex}")
+            return
+        if ret != 0:
+            self._status_set(f"service restart failed (exit {ret})")
+            return
+        self._refresh_controllers()
+        self._status_set("service restarted")
 
     # ------------------------------------------------------ daemon signals ----
 
