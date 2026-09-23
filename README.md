@@ -44,10 +44,15 @@ This repository is a self-contained tool and a worked example of a Linux input p
   **blue** = native, **green** = Xbox emulation. Games may take the lightbar over while
   they run; the resting colour returns when they exit (see
   [Steam coexistence](docs/decisions/steam-coexistence.md)).
+- **Cinnamon / Linux Mint fallback tray** - where a desktop hosts no
+  StatusNotifierItem (Cinnamon, Linux Mint), the same menu is re-served as an
+  `XApp.StatusIcon`, which Mint's panel `xapp-status` applet displays. The two
+  never double up (see [the XApp fallback decision](docs/decisions/xapp-tray-fallback.md)).
 - **Hotplug aware** - controllers may be connected and disconnected at any time; the tray
   menu updates automatically.
 - **No daemon dependencies beyond the standard desktop stack** - `python-evdev`,
-  `dbus-python`, and `PyGObject`.
+  `dbus-python`, and `PyGObject`. GTK+3 is linked only for the Cinnamon/Mint tray
+  fallback (already present in Mint's desktop stack).
 
 ## How it works
 
@@ -64,7 +69,9 @@ Physical controller (evdev /dev/input/eventX)
 ```
 
 A `StatusNotifierItem` tray icon (served over D-Bus, no toolkit dependency) exposes the
-per-controller mode menu. See [docs/architecture/overview.md](docs/architecture/overview.md)
+per-controller mode menu. On desktops without a StatusNotifierItem host (Cinnamon, Linux
+Mint) the identical menu is re-served as an `XApp.StatusIcon`, so Mint's panel shows it
+without extra software. See [docs/architecture/overview.md](docs/architecture/overview.md)
 for the full design.
 
 ## Requirements
@@ -79,7 +86,7 @@ for the full design.
   |---|---|
   | `python3-evdev` | read input devices, create `uinput` virtual devices |
   | `python3-dbus` (`dbus-python`) | serve the tray item and menu over D-Bus |
-  | `python3-gi` (PyGObject) | GLib main loop |
+  | `python3-gi` (PyGObject) | GLib main loop; GTK+3 for the Cinnamon/Mint XApp tray fallback |
 
 - *Optional, for the Bluetooth Xbox pad reporting product `0x02FD`:* `udev-hid-bpf`,
   `clang`, `bpftool`, `libbpf-devel`, and a kernel with `CONFIG_HID_BPF` + BTF. `install.sh`
@@ -188,6 +195,7 @@ pads, over USB and Bluetooth.
   - [Steam coexistence & lightbar ownership](docs/decisions/steam-coexistence.md)
   - [Daemon-owned player numbers](docs/decisions/player-leds.md)
   - [dbusmenu item model](docs/decisions/tray-menu-model.md)
+  - [XApp.StatusIcon tray fallback for Cinnamon](docs/decisions/xapp-tray-fallback.md)
   - [Xbox 0x02FD HID-BPF descriptor fixup](docs/decisions/xbox-02fd-hid-bpf.md)
   - [Per-button remapping GUI & bindings](docs/decisions/button-binding-ui.md)
   - [SDL gamepad database import](docs/decisions/sdl-gamecontrollerdb.md)

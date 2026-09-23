@@ -9,9 +9,16 @@ journalctl --user -u controller-manager.service -f
 
 ## The tray icon does not appear
 
-The tray uses the **StatusNotifierItem** specification. It requires a tray host that
-implements it; some desktops need an extension to show such items. Confirm the daemon is
-running (above) and that your desktop has a working StatusNotifierItem tray.
+The tray uses the **StatusNotifierItem** specification, which needs a tray host that
+implements it. Cinnamon and Linux Mint have no such host, but they are handled: the daemon
+serves the same menu as an `XApp.StatusIcon` instead, which Mint's panel `xapp-status`
+applet displays (see [the XApp fallback decision](decisions/xapp-tray-fallback.md)). So on
+Mint the tray works out of the box; on other desktops without an SNI host (some minimal
+window managers) an extension may be needed.
+
+Confirm the daemon is running (above) and that your desktop has a working
+StatusNotifierItem tray. The XApp fallback only appears while the `xapp-status` applet is
+present on a Mint panel.
 
 Note for developers: the item is registered with the `StatusNotifierWatcher` using its
 **object path**, not a bus name. Registering with a bus name fails silently and the icon

@@ -14,7 +14,23 @@ import traceback
 import evdev
 from evdev import UInput, ecodes as e
 import dbus, dbus.service, dbus.mainloop.glib
+import gi
 from gi.repository import GLib
+
+# Cinnamon / Linux Mint never host the StatusNotifierItem spec, so on those
+# desktops the tray falls back to an XApp.StatusIcon (the same per-controller
+# menu, served in-process through a Gtk menu). Both are optional imports: the
+# SNI path works without either, and _XAPP_AVAILABLE gates the fallback so a
+# machine lacking the XApp typelib keeps working, headless or not.
+_XAPP_AVAILABLE = False
+XApp = Gtk = None
+try:
+    gi.require_version("Gtk", "3.0")
+    gi.require_version("XApp", "1.0")
+    from gi.repository import XApp, Gtk
+    _XAPP_AVAILABLE = True
+except Exception:
+    _XAPP_AVAILABLE = False
 
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
@@ -1402,6 +1418,69 @@ class ControllerManager:
 
 # ── dbusmenu ────────────────────────────────────────────────────────────────
 
+# ── shared tray menu model ───────────────────────────────────────────────────
+#
+# The menu is defined here as plain (kind, ...) tuples, then rendered for each
+# host: DbusmenuServer maps them onto the com.canonical.dbusmenu id model, the
+# XApp fallback onto a Gtk menu. Building once keeps the two hosts' choices
+# identical (same labels, same radio list, same click targets).
+
+def _inst_label(inst, instances):
+    """'DualSense' for a unique model; 'DualSense <player>' when duplicates
+    exist. The player number is the same one shown on the pad's white
+    player LEDs, so menu and hardware always agree - a positional index
+    would flip after a drop-and-readopt while the LEDs kept the number."""
+    peers = [i for i in instances if i.name == inst.name]
+    if len(peers) == 1:
+        return inst.name
+    if inst.player:
+        return f"{inst.name} {inst.player}"
+    return f"{inst.name} {peers.index(inst) + 1}"
+
+
+def _semantic_menu_items(mgr):
+    """The tray menu as (kind, ...) tuples before ids and host-specific types:
+    ('info', label) | ('header', ident, label)
+    | ('radio', ident, mode, label, checked) | ('action', target, label)
+    | ('sep',)."""
+    instances = mgr.get_instances()
+    sem = []
+    if not instances:
+        sem.append(("info", "No controller connected"))
+    else:
+        for inst in instances:
+            sem.append(("header", inst.ident,
+                        _inst_label(inst, instances)))
+            modes = MODES_FOR_FAMILY.get(inst.family, [])
+            if len(modes) == 1:
+                # A single-choice family (e.g. Xbox: only native) has
+                # nothing to switch between. Show the mode as a static,
+                # non-interactive line rather than a lone radio that is
+                # always checked and does nothing when clicked. If a second
+                # mode is ever enabled for the family this reverts to radios
+                # automatically.
+                sem.append(("info", MODE_LABELS[modes[0]]))
+            else:
+                for mode in modes:
+                    sem.append(("radio", inst.ident, mode,
+                                MODE_LABELS[mode], inst.mode == mode))
+            if inst is not instances[-1]:
+                sem.append(("sep",))
+            # Per-controller entry into the binding GUI (separate process);
+            # the ident is carried so the GUI pre-selects this pad.
+            sem.append(("action", ("remap", inst.ident),
+                        "Remap buttons..."))
+            if inst is not instances[-1]:
+                sem.append(("sep",))
+    # Offer a manual compaction only while a gap actually exists - with a
+    # contiguous numbering the entry would be a no-op and just clutter.
+    if _numbering_gap(getattr(i, "player", None) for i in instances):
+        sem.append(("sep",))
+        sem.append(("action", "renumber", "Renumber players"))
+    sem.append(("sep",))   # final separator before Quit
+    return sem
+
+
 class DbusmenuServer(dbus.service.Object):
 
     def __init__(self, bus, path, manager, on_quit):
@@ -1439,57 +1518,10 @@ class DbusmenuServer(dbus.service.Object):
         )
 
     def _inst_label(self, inst, instances):
-        """'DualSense' for a unique model; 'DualSense <player>' when duplicates
-        exist. The player number is the same one shown on the pad's white
-        player LEDs, so menu and hardware always agree - a positional index
-        would flip after a drop-and-readopt while the LEDs kept the number."""
-        peers = [i for i in instances if i.name == inst.name]
-        if len(peers) == 1:
-            return inst.name
-        if inst.player:
-            return f"{inst.name} {inst.player}"
-        return f"{inst.name} {peers.index(inst) + 1}"
+        return _inst_label(inst, instances)
 
     def _semantic_items(self):
-        """The menu as plain (kind, ...) tuples, before ids and dbus types:
-        ('info', label) | ('header', ident, label)
-        | ('radio', ident, mode, label, checked) | ('sep',)."""
-        instances = self._mgr.get_instances()
-        sem = []
-        if not instances:
-            sem.append(("info", "No controller connected"))
-        else:
-            for inst in instances:
-                sem.append(("header", inst.ident,
-                            self._inst_label(inst, instances)))
-                modes = MODES_FOR_FAMILY.get(inst.family, [])
-                if len(modes) == 1:
-                    # A single-choice family (e.g. Xbox: only native) has
-                    # nothing to switch between. Show the mode as a static,
-                    # non-interactive line rather than a lone radio that is
-                    # always checked and does nothing when clicked. If a second
-                    # mode is ever enabled for the family this reverts to radios
-                    # automatically.
-                    sem.append(("info", MODE_LABELS[modes[0]]))
-                else:
-                    for mode in modes:
-                        sem.append(("radio", inst.ident, mode,
-                                    MODE_LABELS[mode], inst.mode == mode))
-                if inst is not instances[-1]:
-                    sem.append(("sep",))
-                # Per-controller entry into the binding GUI (separate process);
-                # the ident is carried so the GUI pre-selects this pad.
-                sem.append(("action", ("remap", inst.ident),
-                            "Remap buttons..."))
-                if inst is not instances[-1]:
-                    sem.append(("sep",))
-        # Offer a manual compaction only while a gap actually exists - with a
-        # contiguous numbering the entry would be a no-op and just clutter.
-        if _numbering_gap(getattr(i, "player", None) for i in instances):
-            sem.append(("sep",))
-            sem.append(("action", "renumber", "Renumber players"))
-        sem.append(("sep",))   # final separator before Quit
-        return sem
+        return _semantic_menu_items(self._mgr)
 
     @staticmethod
     def _props_for(entry):
@@ -1848,6 +1880,157 @@ class TrayIcon(dbus.service.Object):
     def NewToolTip(self): pass
 
 
+# ── XApp tray fallback (Cinnamon / Linux Mint) ───────────────────────────────
+#
+# Desktops without a StatusNotifierItem host (Cinnamon, Linux Mint) make the
+# SNI tray above invisible. Mint's panel applet xapp-status instead displays
+# org.x.StatusIcon.* services, so the daemon re-publishes the same menu there:
+# the icon is plain D-Bus (own the well-known name, answer properties), and the
+# menu pops in-process as a Gtk menu on button release. The icon stays hidden
+# while an SNI watcher is around, so dual-stack desktops never see both.
+
+def _xapp_maybe_apply(it, mgr, ident, mode):
+    """Apply a clicked radio's mode, but only once the radio-group state has
+    settled. Changing a radio group fires 'toggled' on the deselected member
+    too, while get_active() still reports the stale True for it - so the check
+    runs in an idle, after the transition, where exactly one radio is active."""
+    def _idle(*_):
+        if it.get_active():
+            mgr.set_mode(ident, mode)
+        return False
+    GLib.idle_add(_idle)
+
+
+def _xapp_build_menu(mgr, on_quit):
+    """A fresh Gtk menu for the XApp tray, rebuilt from the *current* controller
+    state every time the icon is clicked (the controller list changes under a
+    running desktop, so nothing is cached across clicks). Maps onto the same
+    semantic model as the SNI dbusmenu, so both hosts expose identical choices.
+    Primary and secondary (left/right click) each get their own copy, because
+    XApp.StatusIcon owns one GtkMenu per button."""
+    menu = Gtk.Menu()
+    group = []
+    radios = []   # (widget, checked, ident, mode) - wired AFTER activation
+    for entry in _semantic_menu_items(mgr):
+        kind = entry[0]
+        if kind == "info":
+            it = Gtk.MenuItem(label=entry[1])
+            it.set_sensitive(False)
+        elif kind == "header":
+            it = Gtk.MenuItem(label=entry[2])
+            it.set_sensitive(False)
+        elif kind == "sep":
+            it = Gtk.SeparatorMenuItem()
+        elif kind == "radio":
+            _, ident, mode, label, checked = entry
+            it = Gtk.RadioMenuItem(label=label)
+            if group:
+                # Joining a group resets the active state of every member, so
+                # the checked radio is re-activated below, after all joins.
+                group[0].join_group(it)
+            group.append(it)
+            radios.append((it, checked, ident, mode))
+        elif kind == "action":
+            _, target, label = entry
+            it = Gtk.MenuItem(label=label)
+            if target == "renumber":
+                it.connect("activate", lambda *_, mgr=mgr: mgr.renumber())
+            elif isinstance(target, tuple) and target[0] == "remap":
+                it.connect("activate",
+                           lambda *_, mgr=mgr, i=target[1]: mgr.open_gui(i))
+        menu.append(it)
+    for it, checked, _ident, _mode in radios:
+        if checked:
+            it.set_active(True)   # exactly one can be on per group
+    for it, _checked, ident, mode in radios:
+        # Wired only now: build-time set_active above must not trigger the mode
+        # apply (it fires 'toggled' before the handlers exist here).
+        it.connect("toggled", lambda *_, i=it, g=mgr, c=ident, m=mode:
+                   _xapp_maybe_apply(i, g, c, m))
+    menu.append(Gtk.SeparatorMenuItem())
+    quit_item = Gtk.MenuItem(label="Quit")
+    quit_item.connect("activate", lambda *_, q=on_quit: q())
+    menu.append(quit_item)
+    menu.show_all()
+    return menu
+
+
+class XAppFallbackIcon:
+    """The tray as an XApp.StatusIcon: shown when no StatusNotifierItem watcher
+    exists (Cinnamon/Mint), hidden while one does. Owns one org.x.StatusIcon.*
+    name; whether that name even registers is decided by xapp-status inside
+    libxapp (it only surfaces icons while a monitor applet is present)."""
+
+    _XAPP_NAME = "org.x.StatusIcon.ctrlmgr"
+
+    def __init__(self, manager, on_quit):
+        self._mgr    = manager
+        self._on_quit = on_quit
+        self._icon   = None
+        self._menu_p = None
+        self._menu_s = None
+        if not _XAPP_AVAILABLE:
+            return
+        try:
+            Gtk.init([])   # menu popup needs a Gdk display at click time
+        except Exception as ex:
+            print(f"controller-manager: Gtk init failed, XApp tray disabled: {ex}",
+                  file=sys.stderr)
+            return
+        self._icon = XApp.StatusIcon.new_with_name(self._XAPP_NAME)
+        self._icon.set_label("")
+        self._icon.set_visible(False)
+        self._icon.connect("button-press-event", self._on_button_press)
+        self.refresh()
+
+    def refresh(self):
+        """Icon pick + tooltip from the current controller state. Runs on every
+        daemon on_change (hotplug/mode/rename); display-only and cheap."""
+        if self._icon is None:
+            return
+        instances = self._mgr.get_instances()
+        active = any(i.mode not in ("ps5-native", "xbox-native")
+                     for i in instances)
+        self._icon.set_icon_name(
+            "input-gaming" if active else "input-gaming-symbolic")
+        if instances:
+            tip = "\n".join(f"{i.name} - {MODE_LABELS[i.mode]}"
+                            for i in instances)
+        else:
+            tip = "No controller connected"
+        self._icon.set_tooltip_text(tip)
+
+    def set_visible(self, on):
+        """Show while the SNI path has no host, hide once it does."""
+        if self._icon is not None:
+            self._icon.set_visible(bool(on))
+
+    def _on_button_press(self, *args):
+        """A click is inbound: (re)build both menus from the *current* state so
+        the release pops an up-to-date menu. Gtk activation callbacks run in
+        the daemon's main loop, so they may call mgr/tray directly."""
+        if self._icon is None:
+            return
+        try:
+            pm = _xapp_build_menu(self._mgr, self._on_quit)
+            sm = _xapp_build_menu(self._mgr, self._on_quit)
+        except Exception as ex:
+            print(f"controller-manager: xapp menu build failed: {ex}",
+                  file=sys.stderr)
+            return
+        # Keep the Python refs: set_primary/secondary_menu take a Gtk ref, but
+        # holding ours across the swap keeps the previous menus alive until the
+        # C++ side has cleared its slot (no unref-under-our-feet).
+        self._menu_p = pm
+        self._menu_s = sm
+        try:
+            self._icon.set_primary_menu(pm)
+            self._icon.set_secondary_menu(sm)
+        except Exception as ex:
+            print(f"controller-manager: xapp menu attach failed: {ex}",
+                  file=sys.stderr)
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1865,6 +2048,8 @@ def main():
     def on_change():
         if tray_ref[0]:
             tray_ref[0].refresh()
+        if xapp_ref[0]:
+            xapp_ref[0].refresh()
 
     mgr  = ControllerManager(on_change)
 
@@ -1878,6 +2063,11 @@ def main():
     # Binding-gui API (separate process); shares the daemon's bus and well-known
     # name, so the GUI resolves everything from BUS_NAME alone.
     ctlr = CtlrMgrServer(bus, mgr)
+    # XApp.StatusIcon tray used where no SNI watcher exists (Cinnamon/Mint).
+    # Visibility is driven by the watcher-owner callback below; it starts
+    # hidden and shows once the loop proves no SNI host is listening.
+    xapp_ref = [None]
+    xapp_ref[0] = XAppFallbackIcon(mgr, _shutdown_and_quit)
 
     watcher_name = "org.kde.StatusNotifierWatcher"
 
@@ -1920,6 +2110,10 @@ def main():
             register_with_watcher()
         elif not owner:
             watcher_registered[0] = False
+        # Show the XApp fallback exactly while no SNI host exists, so the two
+        # trays never double up on a desktop that supports both. On Cinnamon
+        # the initial owner callback delivers None -> fallback becomes the tray.
+        xapp_ref[0].set_visible(not owner)
 
     bus.watch_name_owner(watcher_name, _on_watcher_owner)
 

@@ -172,6 +172,15 @@ entries stuck disabled. Each connected controller becomes a section of radio ite
 selecting one calls back into `ControllerManager.set_mode()` via the cached id lookup.
 Full rationale: [dbusmenu item model](../decisions/tray-menu-model.md).
 
+The menu itself is defined once as plain semantic tuples (`_semantic_menu_items`) and then
+rendered per host, so every host exposes identical choices and click targets. On Cinnamon
+and Linux Mint - which never run a `StatusNotifierWatcher` - the daemon re-serves the same
+menu as an `XApp.StatusIcon` (`org.x.StatusIcon.ctrlmgr`), displayed by the panel's
+`xapp-status` applet. That fallback stays hidden while an SNI watcher is present, so a
+desktop supporting both never shows two icons; the menu pops in-process as a fresh
+GTK+3 `Gtk.Menu` per click (the daemon's only GTK linkage), rebuilding from the current
+controller state each time. Details: [XApp fallback](../decisions/xapp-tray-fallback.md).
+
 The tray also hosts the **per-button remapping GUI** entry ("Remap buttons..." per
 controller), which hands off to a separate GTK process. The daemon stays headless; it
 exposes a second D-Bus object (`/ControllerManager`, interface
