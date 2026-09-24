@@ -64,6 +64,21 @@ check(cm.compose_button_maps(None, None) is None
       and cm.compose_button_maps({}, {}) is None,
       "all layers empty -> None (no remap at all)")
 
+# Regression: a config-loaded bindings map arrives with STRING keys (JSON
+# object keys); event codes are ints, so it must normalise before the
+# remapper's lookups - otherwise every bind falls through to passthrough and
+# Triangle->Y etc. silently stop working after a service restart / re-adopt.
+cfg_shaped = {"307": 308, "308": 307}
+m = cm.compose_button_maps(None, cfg_shaped)
+check(m == {307: 308, 308: 307},
+      "string-key config bindings normalise to int codes (Triangle->Y wins)")
+check(cm.compose_button_maps(cfg_shaped, None)[307] == 308,
+      "string-key quirk map normalises too")
+inst = cm.ControllerInstance(None, "W", 0x054c, 0x0ce6, "ps5", "ps5-xbox",
+                             "u", "", [], bindings=cfg_shaped)
+check(inst.bindings == {307: 308, 308: 307},
+      "adopted instance normalises bindings at construction")
+
 # ── config key shape round-trips through JSON ────────────────────────────────
 print("Scenario B: _bindings config normalisation")
 

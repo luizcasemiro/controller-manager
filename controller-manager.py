@@ -139,6 +139,15 @@ QUIRK_BUTTON_MAP = {
     },
 }
 
+def _as_int_map(mapping):
+    """Normalise a {src: dst} button map (config-loaded, JSON round-trips keys
+    as strings; evdev event codes are ints) to {int: int}, dropping pairs that
+    are not numeric. Keeps every map the Remapper consumes int-keyed so lookups
+    against live event codes always match."""
+    return {int(k): int(v) for k, v in (mapping or {}).items()
+            if isinstance(k, (int, str)) and isinstance(v, (int, str))
+            and str(k).lstrip("-").isdigit() and str(v).lstrip("-").isdigit()}
+
 def compose_button_maps(quirk, user=None):
     """Combine the driver quirk map and the per-controller user bindings into
     the single dict the Remapper applies per event.
@@ -149,7 +158,8 @@ def compose_button_maps(quirk, user=None):
     quirk remap for that physical button; any other code - or a whole empty
     user map - keeps the plain program mapping. None when both layers are
     empty (plain passthrough)."""
-    quirk, user = quirk or {}, user or {}
+    quirk = _as_int_map(quirk)
+    user  = _as_int_map(user)
     combined = {}
     for src, dst in user.items():
         combined[src] = dst                 # user bind wins outright
@@ -696,7 +706,11 @@ class ControllerInstance:
         self.invert_y = invert_y  # mirror ABS_Y/ABS_RY on the virtual output
         # Per-controller user button remap { src ecode: dst ecode }; keys the
         # user explicitly rebound only. Empty means "program remap as-is".
-        self.bindings = dict(bindings or {})
+        # Normalised to int keys/values here: a config-loaded entry (JSON
+        # object keys are strings) must not feed the remapper as-is, or every
+        # event lookup against int codes misses and the binds silently become
+        # passthrough.
+        self.bindings = _as_int_map(bindings)
         self.uniq    = uniq       # stable per-device id (BT MAC / serial)
         self.phys    = phys       # physical attachment (USB port / BT adapter)
         # Stable key across reconnects: a reconnect changes the evdev path but
@@ -1263,13 +1277,7 @@ class ControllerManager:
     def _norm_bindings(entry):
         """JSON round-trips object keys as strings, but evdev codes are ints.
         Normalise a configured {src: dst} map (or None) to {int src: int dst}."""
-        out = {}
-        for k, v in (entry or {}).items():
-            try:
-                out[int(k)] = int(v)
-            except (TypeError, ValueError):
-                continue
-        return out
+        return _as_int_map(entry)
 
     def get_bindings(self, ident):
         """The controller's configured {src ec: dst ec} map (int keys)."""
