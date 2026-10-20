@@ -23,6 +23,10 @@ cd controller-manager
 
 1. **User space** (no privileges):
    - `controller-manager.py` -> `~/.local/bin/controller-manager.py`
+   - `controller-gui.py` -> `~/.local/bin/controller-gui.py`
+   - `controller-setup.py` -> `~/.local/bin/controller-setup.py`
+   - `controller-overlay.py` -> `~/.local/bin/controller-overlay.py`
+   - `controller_setup/*.py` -> `~/.local/bin/controller_setup/`
    - `controller-manager.service` -> `~/.config/systemd/user/controller-manager.service`
 2. **Root space** (asks for a password):
    - `controller-hidraw-gate` -> `/usr/local/bin/controller-hidraw-gate` (root, `0755`)
@@ -48,6 +52,11 @@ systemctl --user is-active controller-manager.service        # -> active
 # Privileged helper is in place and root-owned
 ls -l /usr/local/bin/controller-hidraw-gate                  # -> -rwxr-xr-x root root
 sudo visudo -cf /etc/sudoers.d/controller-hidraw             # -> parsed OK
+
+# Optional pairing/overlay commands are installed
+ls -l ~/.local/bin/controller-setup.py
+ls -l ~/.local/bin/controller-overlay.py
+ls -l ~/.local/bin/controller_setup/
 ```
 
 The tray icon should appear and list connected controllers with their modes. To confirm
@@ -70,7 +79,11 @@ systemctl --user disable --now controller-manager.service
 
 # Remove user-space files
 rm -f ~/.local/bin/controller-manager.py \
+      ~/.local/bin/controller-gui.py \
+      ~/.local/bin/controller-setup.py \
+      ~/.local/bin/controller-overlay.py \
       ~/.config/systemd/user/controller-manager.service
+rm -rf ~/.local/bin/controller_setup
 systemctl --user daemon-reload
 
 # Remove root-space files

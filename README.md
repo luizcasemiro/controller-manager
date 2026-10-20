@@ -33,6 +33,15 @@ This repository is a self-contained tool and a worked example of a Linux input p
   (including *program default* to fall back to the mode's own mapping), per controller and
   independent of its mode. Bindings persist in `~/.config/controller-modes.json` under
   `_bindings`; see [the GUI decision](docs/decisions/button-binding-ui.md).
+- **Visual Bluetooth pairing from KDE Connect** - one Run Command entry activates the
+  existing Game Mode script, opens a fullscreen console-style pairing dashboard, pairs,
+  trusts and connects Bluetooth controllers, then offers a button that launches Heroic in
+  console mode. See [the pairing session decision](docs/decisions/visual-pairing-session.md).
+- **In-game controller overlay** - hold **LT + RT** above 70% for 0.5 s, then press
+  **Home/PS/Guide** to open a fullscreen menu with pair-new-controller, open Heroic, exit
+  Game Mode and close. The daemon monitors the chord without grabbing the pad; remapped
+  controllers are read from their virtual output. See
+  [the overlay decision](docs/decisions/controller-overlay.md).
 - **Multiple controllers at once** - two identical pads are tracked independently via a
   stable per-device identity, so one can be native while the other is remapped.
 - **Launcher-agnostic** - works at the device layer, so every application sees the result
@@ -93,6 +102,9 @@ for the full design.
   builds a HID-BPF descriptor fixup for that pad; without these it skips the fixup with a
   warning and everything else installs normally (see
   [the Xbox 0x02FD decision](docs/decisions/xbox-02fd-hid-bpf.md)).
+- *Optional, for the KDE Connect visual pairing command:* BlueZ, a configured Game Mode
+  script, Flatpak with Heroic installed, and KDE Connect with the Run Command plugin. See
+  [the pairing runbook](runbooks/controller-setup.md).
 
 ## Installation
 
@@ -129,6 +141,55 @@ The reverse direction (output a PlayStation identity from an Xbox pad) is intent
 not offered; see [output protocol constraints](docs/decisions/output-protocol-constraints.md)
 for why.
 
+### Visual pairing from KDE Connect
+
+`install.sh` also deploys `controller-setup.py`. Add this Run Command entry in KDE
+Connect:
+
+```text
+Name: Preparar controles e abrir Heroic
+Command: /home/<user>/.local/bin/controller-setup.py
+```
+
+The command returns immediately to KDE Connect; the fullscreen dashboard runs in a
+detached process. It:
+
+1. force-closes an already-running Heroic (`SIGTERM`, then `SIGKILL` if needed);
+2. runs the configured Game Mode script (monitor and audio);
+3. shows a fullscreen pairing dashboard on the primary display;
+4. discovers only Bluetooth gamepads and pairs, trusts and connects one at a time;
+5. stops discovery as soon as a new controller is connected;
+6. enables **Abrir Heroic**, which starts Heroic with `--console --fullscreen`;
+7. becomes navigable with the connected controller: D-pad/left stick moves focus, A
+   selects, B closes the dashboard, Start opens Heroic and Select scans for another pad;
+8. keeps Game Mode active if the window is closed.
+
+To add the command to every KDE Connect Run Command config automatically (with a
+timestamped backup), run:
+
+```bash
+python3 scripts/kdeconnect-install-command.py
+```
+
+Restart KDE Connect afterwards so the plugin reloads the command list. The full
+procedure is in [the pairing runbook](runbooks/controller-setup.md).
+
+### Controller overlay
+
+With a controller connected, hold **LT + RT** above 70% for 0.5 s, then press
+**Home/PS/Guide**. A fullscreen overlay opens with:
+
+- **Parear novo controle** - opens the pairing dashboard in pair-only mode, without
+  changing Game Mode or touching Heroic;
+- **Abrir Heroic** - verifies the Controller Manager, activates Game Mode, force-closes
+  any running Heroic and starts it with `--console --fullscreen`;
+- **Sair do Game Mode** - asks for confirmation and runs `gamemode.sh 0`;
+- **Fechar overlay** - closes the menu, keeping the current Game Mode.
+
+Navigation is the same as the pairing dashboard: D-pad/left stick, A, B, Start and
+Select. The overlay shows the Controller Manager service state and whether the daemon
+lists the connected controllers.
+
 ## Configuration
 
 Modes are persisted per device in `~/.config/controller-modes.json`. The key is the
@@ -156,6 +217,23 @@ after editing it:
 
 The file is managed by the daemon; it is normally not edited by hand. A stored mode that
 is no longer offered for a controller family falls back to that family's native default.
+
+The visual pairing command reads an optional `~/.config/controller-setup.json`. All keys
+are optional; the defaults target the workstation Game Mode script and the Flatpak Heroic
+build:
+
+```json
+{
+  "gamemode_script": "~/Documentos/dev/gamemode/gamemode.sh",
+  "flatpak_app": "com.heroicgameslauncher.hgl",
+  "heroic_args": ["--console", "--fullscreen"]
+}
+```
+
+`GAMEMODE_SCRIPT` overrides `gamemode_script` for one run. The session writes its log to
+`~/.local/state/controller-setup/session.log`. If Heroic is not installed through Flatpak,
+set `heroic_command` to the full command line instead, for example
+`["/opt/heroic/heroic", "--console", "--fullscreen"]`.
 
 Per-button bindings live under the reserved `_bindings` key, keyed by controller identity
 (stable per-device, same as modes). Each value maps a *device* button code (as the pad
@@ -199,10 +277,13 @@ pads, over USB and Bluetooth.
   - [Xbox 0x02FD HID-BPF descriptor fixup](docs/decisions/xbox-02fd-hid-bpf.md)
   - [Per-button remapping GUI & bindings](docs/decisions/button-binding-ui.md)
   - [SDL gamepad database import](docs/decisions/sdl-gamecontrollerdb.md)
+  - [Visual Bluetooth pairing session](docs/decisions/visual-pairing-session.md)
+  - [Controller overlay and chord](docs/decisions/controller-overlay.md)
 - [Troubleshooting / known issues](docs/troubleshooting.md)
 - Runbooks:
   - [Installation](runbooks/install.md)
   - [Update](runbooks/update.md)
+  - [Visual pairing, overlay and Heroic console](runbooks/controller-setup.md)
   - [Verify a remap](runbooks/verify-remapping.md)
   - [Verify multi-controller operation](runbooks/verify-multi-controller.md)
 

@@ -31,8 +31,11 @@ driving the DualSense lightbar.
 | Component | Path (installed) | Responsibility |
 |---|---|---|
 | Daemon | `~/.local/bin/controller-manager.py` | detection, remapping, tray, hotplug |
+| Pairing UI | `~/.local/bin/controller-setup.py` | KDE Connect trigger, Game Mode, BlueZ pairing, Heroic launch |
+| Overlay | `~/.local/bin/controller-overlay.py` | LT+RT+Home menu, health status, pair/Heroic/Game Mode off |
 | Service | `~/.config/systemd/user/controller-manager.service` | autostart with the desktop session |
 | Config | `~/.config/controller-modes.json` | persisted mode per device |
+| Pairing config | `~/.config/controller-setup.json` | optional Game Mode script and Heroic command |
 | HID gate | `/usr/local/bin/controller-hidraw-gate` | identity-keyed gating: markers, driver rebind (fd revoke + lightbar rearm), chmod |
 | Gate udev rule | `/etc/udev/rules.d/72-controller-manager.rules` | gated hidraw nodes are born `MODE 0000`, without the uaccess tag |
 | Gate state | `/run/controller-manager/gated/<uniq>` | marker per gated pad (tmpfs - reboots fail open) |
@@ -198,6 +201,42 @@ exposes a second D-Bus object (`/ControllerManager`, interface
   and re-asserts the mode afterward - so the recorded press goes to the pad, not to the
   virtual device the grab would otherwise forward it through. Composition and semantics:
   [button binding UI](../decisions/button-binding-ui.md).
+
+## Visual pairing session (optional)
+
+`controller-setup.py` is a separate process started by a KDE Connect Run Command entry. It
+does not alter the daemon's lifecycle. The process:
+
+1. force-closes any running Heroic (`SIGTERM`, then `SIGKILL`) and runs the configured
+   Game Mode script (monitor and audio);
+2. serves a fullscreen GTK3 dashboard;
+3. uses the BlueZ D-Bus API to discover only gamepads, then pairs, trusts and connects
+   one candidate at a time through a temporary `org.bluez.Agent1`;
+4. stops discovery at the first newly connected controller and offers **Abrir Heroic**
+   (`flatpak run com.heroicgameslauncher.hgl --console --fullscreen`) plus **Conectar mais
+   controles** for another explicit window;
+5. reads the connected controller through a non-grabbing evdev listener so the dashboard is
+   navigable from the couch (D-pad/stick, A, B, Start, Select).
+
+Once BlueZ has connected a pad, it appears through evdev and the normal daemon hotplug
+path takes over. The rationale, including the conservative device filter and the
+one-controller-per-search rule, is in
+[the visual pairing decision](../decisions/visual-pairing-session.md).
+
+## Controller overlay
+
+The daemon also runs a non-grabbing `ComboMonitor`. It reads every gamepad's
+`ABS_Z`/`ABS_RZ` (and digital trigger fallback) plus `BTN_MODE`/`KEY_MENU`; holding both
+triggers above 70% for 0.5 s arms the chord, and pressing Home/PS/Guide then fires it. For
+a remapped pad it reads the virtual output, because the source is grabbed by the remapper.
+
+The chord launches `controller-overlay.py`, a separate fullscreen GTK process with a
+single-instance lock. Its menu reuses the pairing UI in `--pair-only` mode, can force-close
+and relaunch Heroic, and runs the existing Game Mode off command after confirmation. Both
+the pairing session and the overlay check `controller-manager.service` and the
+`ListControllers` D-Bus API; an unavailable daemon is restarted once, and Heroic is blocked
+until the daemon lists the controller. Full rationale:
+[the overlay decision](../decisions/controller-overlay.md).
 
 ## Lifecycle and persistence
 

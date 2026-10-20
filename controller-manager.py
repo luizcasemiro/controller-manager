@@ -9,7 +9,7 @@ Supports:
 Multiple controllers simultaneously, each with its own mode.
 """
 
-import os, sys, json, signal, threading, time, subprocess, glob, selectors
+import os, sys, json, signal, threading, time, subprocess, glob, selectors, fcntl
 import traceback
 import evdev
 from evdev import UInput, ecodes as e
@@ -240,6 +240,39 @@ CTRLMGR_IFACE = "org.ctrlmgr.ControllerManager1"
 # next to the daemon itself). Launching it spawns a NEW process: the daemon is
 # deliberately GUI-free (see docs/architecture/overview.md).
 GUI_SCRIPT = os.path.expanduser("~/.local/bin/controller-gui.py")
+OVERLAY_SCRIPT = os.path.expanduser("~/.local/bin/controller-overlay.py")
+if not os.path.exists(OVERLAY_SCRIPT):
+    OVERLAY_SCRIPT = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "controller-overlay.py")
+
+SETUP_LOCK = os.path.join(
+    os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+    "controller-setup", "session.lock")
+OVERLAY_LOCK = os.path.join(
+    os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state")),
+    "controller-setup", "overlay.lock")
+
+
+def _lock_is_held(path):
+    try:
+        with open(path, "a+") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    except OSError:
+        return False
+    return False
+
+# The overlay chord monitor is optional: an older install without the
+# controller_setup package still gets the tray daemon, just without the chord.
+try:
+    from controller_setup.combo import ComboMonitor
+except Exception as _combo_ex:
+    ComboMonitor = None
+    print(f"controller-manager: overlay chord disabled: {_combo_ex}",
+          file=sys.stderr)
 
 # Config key holding per-controller user button bindings, mirroring the "_"-prefixed
 # manager-controlled keys (_players): { <ident>: { src_evcode: dst_evcode } }. Only
@@ -2052,6 +2085,39 @@ def main():
     bus_name = dbus.service.BusName(BUS_NAME, bus)
 
     tray_ref = [None]
+    combo_ref = [None]
+
+    def open_overlay():
+        if not os.path.exists(OVERLAY_SCRIPT):
+            print(f"controller-manager: overlay script missing: {OVERLAY_SCRIPT}",
+                  file=sys.stderr)
+            return
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            print("controller-manager: overlay skipped (no graphical session)",
+                  file=sys.stderr)
+            return
+        # Do not cover a pairing dashboard that is already open. The setup
+        # process holds this flock for the whole UI lifetime.
+        if _lock_is_held(SETUP_LOCK):
+            return
+        if _lock_is_held(OVERLAY_LOCK):
+            return
+        try:
+            subprocess.Popen(
+                [sys.executable, OVERLAY_SCRIPT],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except Exception as ex:
+            print(f"controller-manager: cannot open overlay: {ex}",
+                  file=sys.stderr)
+
+    def stop_combo():
+        if combo_ref[0] is not None:
+            combo_ref[0].stop()
 
     def on_change():
         if tray_ref[0]:
@@ -2062,6 +2128,7 @@ def main():
     mgr  = ControllerManager(on_change)
 
     def _shutdown_and_quit():
+        stop_combo()
         mgr.stop_all()
         loop.quit()
 
@@ -2099,6 +2166,12 @@ def main():
     # host reads is already complete (see ControllerManager.start).
     mgr.start()
 
+    # LT + RT + Home opens the overlay. The monitor reads evdev without
+    # grabbing, so it sees native pads and the remapper's virtual output alike.
+    if ComboMonitor is not None:
+        combo_ref[0] = ComboMonitor(open_overlay)
+        combo_ref[0].start()
+
     # Register exactly once per watcher lifetime, driven by watch_name_owner.
     # Two points matter:
     #   * It must run inside the main loop (watch_name_owner delivers the current
@@ -2126,6 +2199,7 @@ def main():
     bus.watch_name_owner(watcher_name, _on_watcher_owner)
 
     def _shutdown(*_):
+        stop_combo()
         mgr.stop_all()
         loop.quit()
 

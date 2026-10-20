@@ -6,9 +6,14 @@
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
-echo "==> User-space (controller-manager + binding GUI + service)"
+echo "==> User-space (daemon, GUIs, setup, overlay, service)"
 install -D -m 0755 controller-manager.py       "$HOME/.local/bin/controller-manager.py"
 install -D -m 0755 controller-gui.py           "$HOME/.local/bin/controller-gui.py"
+install -D -m 0755 controller-setup.py         "$HOME/.local/bin/controller-setup.py"
+install -D -m 0755 controller-overlay.py       "$HOME/.local/bin/controller-overlay.py"
+for f in controller_setup/*.py; do
+    install -D -m 0644 "$f" "$HOME/.local/bin/controller_setup/$(basename "$f")"
+done
 install -D -m 0644 controller-manager.service  "$HOME/.config/systemd/user/controller-manager.service"
 
 echo "==> Root-space (hidraw gate + led helper + udev rule + sudoers) - sudo required"
@@ -84,4 +89,12 @@ else
     echo "service: NOT active" >&2
     echo "check:  journalctl --user -u controller-manager.service -n 30" >&2
     exit 1
+fi
+
+if [[ "${INSTALL_KDE_CONNECT:-0}" == "1" ]]; then
+    echo "==> KDE Connect Run Command entry"
+    python3 scripts/kdeconnect-install-command.py
+else
+    echo "note: to add the KDE Connect command automatically, run"
+    echo "      INSTALL_KDE_CONNECT=1 ./install.sh"
 fi

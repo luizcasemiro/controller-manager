@@ -33,7 +33,7 @@ behaviour (numbering, per-pad gating, reconnect isolation) use the
 - Syntax-check before committing:
 
   ```bash
-  python3 -m py_compile controller-manager.py
+  python3 -m py_compile controller-manager.py controller-setup.py controller-overlay.py controller_setup/*.py
   ```
 
 ## Tests

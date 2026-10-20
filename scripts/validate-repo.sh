@@ -75,10 +75,19 @@ fi
 # =============================================================================
 echo "Check 5: Python syntax"
 
-if ! python3 -m py_compile "${REPO_ROOT}/controller-manager.py" 2>/dev/null; then
-    echo "  controller-manager.py: py_compile failed"
-    echo "x" >> "${ERROR_LOG}"
-fi
+PY_FILES=("${REPO_ROOT}/controller-manager.py"
+          "${REPO_ROOT}/controller-gui.py"
+          "${REPO_ROOT}/controller-setup.py"
+          "${REPO_ROOT}/controller-overlay.py"
+          "${REPO_ROOT}/scripts/kdeconnect-install-command.py")
+while IFS= read -r f; do PY_FILES+=("$f"); done < \
+    <(find "${REPO_ROOT}/controller_setup" -name "*.py" -type f 2>/dev/null | sort)
+for py in "${PY_FILES[@]}"; do
+    if ! python3 -m py_compile "${py}" 2>/dev/null; then
+        echo "  ${py#"${REPO_ROOT}"/}: py_compile failed"
+        echo "x" >> "${ERROR_LOG}"
+    fi
+done
 
 # =============================================================================
 # Check 6: shell scripts (shellcheck, if available)
